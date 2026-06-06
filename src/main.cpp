@@ -1,5 +1,17 @@
 #include <Arduino.h>
 
+#include <esp_mac.h>
+
+// Configuration options
+#define GET_MAC                                                                \
+  false // Set to true to print MAC address on startup, false otherwise
+
+// ESP-NOW Robot MAC address lookup table (index matches robot_id)
+const uint8_t ROBOT_MACS[][6] = {
+  {0x98, 0x3D, 0xAE, 0xB4, 0xB6, 0x44}  // Robot 0
+};
+
+
 // Struct representing the packet payload (8 bytes total)
 struct __attribute__((__packed__)) RobotPacket {
   uint8_t header;
@@ -37,6 +49,14 @@ void setup() {
 }
 
 void loop() {
+#if GET_MAC
+  uint8_t mac[6];
+  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+    Serial.printf("MAC Address: %02X:%02X:%02X:%02X:%02X:%02X\n", mac[0],
+                  mac[1], mac[2], mac[3], mac[4], mac[5]);
+  }
+#endif
+
   static uint8_t buffer[8];
   static size_t bytes_read = 0;
 
