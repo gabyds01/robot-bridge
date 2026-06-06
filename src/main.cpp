@@ -1,18 +1,95 @@
 #include <Arduino.h>
 
-// put function declarations here:
-int myFunction(int, int);
+// Struct representing the packet payload (8 bytes total)
+struct __attribute__((__packed__)) RobotPacket {
+  uint8_t header;
+  uint8_t length;
+  uint8_t robot_id;
+  int16_t wheel_left;
+  int16_t wheel_right;
+  uint8_t crc;
+};
+
+// Compute CRC-8 Dallas/Maxim — matches the Python/sender implementation.
+uint8_t crc8_dallas(const uint8_t *data, size_t len) {
+  uint8_t crc = 0x00;
+  for (size_t i = 0; i < len; i++) {
+    uint8_t inbyte = data[i];
+    for (int j = 0; j < 8; j++) {
+      uint8_t mix = (crc ^ inbyte) & 0x01;
+      crc >>= 1;
+      if (mix) {
+        crc ^= 0x8C;
+      }
+      inbyte >>= 1;
+    }
+  }
+  return crc;
+}
 
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+  Serial.begin(115200);
+  while (!Serial) {
+    ; // Wait for serial port to connect (needed for native USB)
+  }
+  Serial.println(
+      "ESP32 Robot Bridge Initialized. Ready to receive commands...");
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-}
+  static uint8_t buffer[8];
+  static size_t bytes_read = 0;
 
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
+  while (Serial.available() > 0) {
+    uint8_t b = Serial.read();
+
+    // State machine to parse the 8-byte packet
+    if (bytes_read == 0) {
+      if (b == 0xAA) {
+        buffer[0] = b;
+        bytes_read = 1;
+      }
+    } else if (bytes_read == 1) {
+      if (b == 0x08) { // The expected packet length is 8
+        buffer[1] = b;
+        bytes_read = 2;
+      } else {
+        // Invalid length, reset or restart sync if this byte is a header
+        if (b == 0xAA) {
+          buffer[0] = 0xAA;
+          bytes_read = 1;
+        } else {
+          bytes_read = 0;
+        }
+      }
+    } else if (bytes_read < 8) {
+      buffer[bytes_read] = b;
+      bytes_read++;
+
+      // Once all 8 bytes are received, process the packet
+      if (bytes_read == 8) {
+        uint8_t calculated_crc = crc8_dallas(buffer, 7);
+        uint8_t received_crc = buffer[7];
+
+        if (calculated_crc == received_crc) {
+          RobotPacket *packet = (RobotPacket *)buffer;
+
+          // Reconstruct floating-point values from scaled short values
+          float wl = (float)packet->wheel_left / 100.0f;
+          float wr = (float)packet->wheel_right / 100.0f;
+
+          Serial.printf("PACKET RECEIVED - ID: %d | Left Wheel: %.2f | Right "
+                        "Wheel: %.2f | CRC: OK (0x%02X)\n",
+                        packet->robot_id, wl, wr, received_crc);
+        } else {
+          Serial.printf("PACKET ERROR - CRC mismatch: calculated 0x%02X, "
+                        "received 0x%02X\n",
+                        calculated_crc, received_crc);
+        }
+
+        // Reset state machine for next packet
+        bytes_read = 0;
+      }
+    }
+  }
 }
