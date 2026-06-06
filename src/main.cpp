@@ -1,6 +1,7 @@
 #include <Arduino.h>
-
+#include <WiFi.h>
 #include <esp_mac.h>
+#include <esp_now.h>
 
 // Configuration options
 #define GET_MAC                                                                \
@@ -8,11 +9,10 @@
 
 // ESP-NOW Robot MAC address lookup table (index matches robot_id)
 const uint8_t ROBOT_MACS[][6] = {
-  {0x98, 0x3D, 0xAE, 0xB4, 0xB6, 0x44}  // Robot 0
+    {0x98, 0x3D, 0xAE, 0xB4, 0xB6, 0x44} // Robot 0
 };
 
-
-// Struct representing the packet payload (8 bytes total)
+// Struct representing the packet payload (8 bytes total) from serial
 struct __attribute__((__packed__)) RobotPacket {
   uint8_t header;
   uint8_t length;
@@ -20,6 +20,12 @@ struct __attribute__((__packed__)) RobotPacket {
   int16_t wheel_left;
   int16_t wheel_right;
   uint8_t crc;
+};
+
+// Struct representing the control packet sent over ESP-NOW (8 bytes)
+struct __attribute__((__packed__)) RobotControlPacket {
+  float wheel_left;
+  float wheel_right;
 };
 
 // Compute CRC-8 Dallas/Maxim — matches the Python/sender implementation.
@@ -46,6 +52,28 @@ void setup() {
   }
   Serial.println(
       "ESP32 Robot Bridge Initialized. Ready to receive commands...");
+
+  // Initialize WiFi in Station mode (required for ESP-NOW)
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+
+  // Initialize ESP-NOW
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+
+  // Register robots as ESP-NOW peers
+  for (size_t i = 0; i < sizeof(ROBOT_MACS) / 6; i++) {
+    esp_now_peer_info_t peerInfo;
+    memset(&peerInfo, 0, sizeof(peerInfo));
+    memcpy(peerInfo.peer_addr, ROBOT_MACS[i], 6);
+    peerInfo.channel = 0;
+    peerInfo.encrypt = false;
+    if (esp_now_add_peer(&peerInfo) != ESP_OK) {
+      Serial.printf("Failed to add peer for Robot %d\n", i);
+    }
+  }
 }
 
 void loop() {
@@ -101,6 +129,23 @@ void loop() {
           Serial.printf("PACKET RECEIVED - ID: %d | Left Wheel: %.2f | Right "
                         "Wheel: %.2f | CRC: OK (0x%02X)\n",
                         packet->robot_id, wl, wr, received_crc);
+
+          // Forward to the target robot via ESP-NOW
+          if (packet->robot_id < sizeof(ROBOT_MACS) / 6) {
+            RobotControlPacket esp_packet;
+            esp_packet.wheel_left = wl;
+            esp_packet.wheel_right = wr;
+
+            esp_err_t result =
+                esp_now_send(ROBOT_MACS[packet->robot_id],
+                             (const uint8_t *)&esp_packet, sizeof(esp_packet));
+            if (result != ESP_OK) {
+              Serial.printf("ESP-NOW Send Failed to Robot %d (error: 0x%X)\n",
+                            packet->robot_id, result);
+            }
+          } else {
+            Serial.printf("Unknown Robot ID: %d\n", packet->robot_id);
+          }
         } else {
           Serial.printf("PACKET ERROR - CRC mismatch: calculated 0x%02X, "
                         "received 0x%02X\n",
