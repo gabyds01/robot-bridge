@@ -1,0 +1,9 @@
+.pio
+
+# Compilation database
+compile_commands.json
+
+# Language server cache / IDEs
+.cache/
+.clang_complete
+.gcc-flags.json
