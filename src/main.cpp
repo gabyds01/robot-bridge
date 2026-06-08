@@ -28,6 +28,14 @@ struct __attribute__((__packed__)) RobotControlPacket {
   float wheel_right;
 };
 
+// Struct representing the telemetry packet sent over ESP-NOW (16 bytes)
+struct __attribute__((__packed__)) RobotTelemetryPacket {
+  float wheel_left_vel;   // actual Left wheel velocity in m/s
+  float wheel_right_vel;  // actual Right wheel velocity in m/s
+  int32_t encoder_left;   // Left encoder tick count
+  int32_t encoder_right;  // Right encoder tick count
+};
+
 // Compute CRC-8 Dallas/Maxim — matches the Python/sender implementation.
 uint8_t crc8_dallas(const uint8_t *data, size_t len) {
   uint8_t crc = 0x00;
@@ -43,6 +51,37 @@ uint8_t crc8_dallas(const uint8_t *data, size_t len) {
     }
   }
   return crc;
+}
+
+// Callback function executed when ESP-NOW telemetry data is received from a robot
+void OnDataRecv(const esp_now_recv_info_t *recv_info,
+                const uint8_t *incomingData, int len) {
+  if (len == sizeof(RobotTelemetryPacket)) {
+    RobotTelemetryPacket telemetry;
+    memcpy(&telemetry, incomingData, sizeof(telemetry));
+
+    // Identify the robot ID based on the sender's MAC address
+    int robot_id = -1;
+    for (size_t i = 0; i < sizeof(ROBOT_MACS) / 6; i++) {
+      if (memcmp(recv_info->src_addr, ROBOT_MACS[i], 6) == 0) {
+        robot_id = i;
+        break;
+      }
+    }
+
+    if (robot_id != -1) {
+      Serial.printf("TELEMETRY RECEIVED - ID: %d | Left Wheel Vel: %.2f | Right Wheel Vel: %.2f | Left Ticks: %d | Right Ticks: %d\n",
+                    robot_id, telemetry.wheel_left_vel, telemetry.wheel_right_vel,
+                    telemetry.encoder_left, telemetry.encoder_right);
+    } else {
+      // If MAC is not in lookup table, print with MAC
+      Serial.printf("TELEMETRY RECEIVED - MAC: %02X:%02X:%02X:%02X:%02X:%02X | Left Wheel Vel: %.2f | Right Wheel Vel: %.2f | Left Ticks: %d | Right Ticks: %d\n",
+                    recv_info->src_addr[0], recv_info->src_addr[1], recv_info->src_addr[2],
+                    recv_info->src_addr[3], recv_info->src_addr[4], recv_info->src_addr[5],
+                    telemetry.wheel_left_vel, telemetry.wheel_right_vel,
+                    telemetry.encoder_left, telemetry.encoder_right);
+    }
+  }
 }
 
 void setup() {
@@ -74,6 +113,9 @@ void setup() {
       Serial.printf("Failed to add peer for Robot %d\n", i);
     }
   }
+
+  // Register receiving callback
+  esp_now_register_recv_cb(esp_now_recv_cb_t(OnDataRecv));
 }
 
 void loop() {
