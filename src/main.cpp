@@ -32,8 +32,21 @@ struct __attribute__((__packed__)) RobotControlPacket {
 struct __attribute__((__packed__)) RobotTelemetryPacket {
   float wheel_left_vel;   // actual Left wheel velocity in m/s
   float wheel_right_vel;  // actual Right wheel velocity in m/s
-  int32_t encoder_left;   // Left encoder tick count
-  int32_t encoder_right;  // Right encoder tick count
+  int32_t encoder_left;   // Left encoder delta ticks
+  int32_t encoder_right;  // Right encoder delta ticks
+};
+
+// Struct representing the binary telemetry packet sent over serial to the PC (10 bytes)
+// Header 0xBB distinguishes it from command packets (0xAA)
+struct __attribute__((__packed__)) TelemetrySerialPacket {
+  uint8_t header;        // 0xBB
+  uint8_t length;        // 0x0A (10)
+  uint8_t robot_id;
+  int16_t wheel_left;    // velocity × 100 (m/s scaled to int16)
+  int16_t wheel_right;   // velocity × 100
+  int16_t enc_delta_left;  // encoder ticks since last packet
+  int16_t enc_delta_right;
+  // CRC-8 appended after this struct (1 byte)
 };
 
 // Compute CRC-8 Dallas/Maxim — matches the Python/sender implementation.
@@ -73,6 +86,19 @@ void OnDataRecv(const esp_now_recv_info_t *recv_info,
       Serial.printf("TELEMETRY RECEIVED - ID: %d | Left Wheel Vel: %.2f | Right Wheel Vel: %.2f | Left Ticks: %d | Right Ticks: %d\n",
                     robot_id, telemetry.wheel_left_vel, telemetry.wheel_right_vel,
                     telemetry.encoder_left, telemetry.encoder_right);
+
+      // Forward telemetry as binary packet (0xBB) over serial to PC
+      TelemetrySerialPacket pkt;
+      pkt.header = 0xBB;
+      pkt.length = 0x0A;
+      pkt.robot_id = (uint8_t)robot_id;
+      pkt.wheel_left = (int16_t)constrain(telemetry.wheel_left_vel * 100.0f, -32767, 32767);
+      pkt.wheel_right = (int16_t)constrain(telemetry.wheel_right_vel * 100.0f, -32767, 32767);
+      pkt.enc_delta_left = (int16_t)constrain(telemetry.encoder_left, -32767, 32767);
+      pkt.enc_delta_right = (int16_t)constrain(telemetry.encoder_right, -32767, 32767);
+      uint8_t crc = crc8_dallas((const uint8_t *)&pkt, sizeof(pkt));
+      Serial.write((const uint8_t *)&pkt, sizeof(pkt));
+      Serial.write(crc);
     } else {
       // If MAC is not in lookup table, print with MAC
       Serial.printf("TELEMETRY RECEIVED - MAC: %02X:%02X:%02X:%02X:%02X:%02X | Left Wheel Vel: %.2f | Right Wheel Vel: %.2f | Left Ticks: %d | Right Ticks: %d\n",
